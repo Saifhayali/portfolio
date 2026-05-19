@@ -57,7 +57,6 @@ int digits = 0;
 double point = 0;
 int handle_ema = INVALID_HANDLE;
 int handle_adx = INVALID_HANDLE;
-int handle_ha = INVALID_HANDLE;
 
 ENUM_TIMEFRAMES chart_tf;
 TradeRecord current_trade;
@@ -71,11 +70,11 @@ double daily_profit = 0.0;
 double monthly_profit = 0.0;
 double max_drawdown = 0.0;
 double peak_equity = 0.0;
-datetime last_reset_day;
-datetime last_reset_month;
+int last_reset_day = 0;
+int last_reset_month = 0;
 
 // Signal tracking
-int last_signal_bar = 0;
+datetime last_signal_time = 0;
 bool pending_signal = false;
 int pending_direction = 0;
 
@@ -116,13 +115,15 @@ int OnInit()
       return INIT_FAILED;
    }
    
-   // Heikin Ashi setup will be done in OnTick
+   // Initialize day and month
+   last_reset_day = TimeDay(TimeCurrent());
+   last_reset_month = TimeMonth(TimeCurrent());
    
    Print("TradeNova Ragnarok v6.4 initialized successfully");
    Print("Timeframe: ", GetTimeframeString(Timeframe));
-   Print("Fixed Profit: $", FixedProfit);
-   Print("Fixed Loss: $", FixedLoss);
-   Print("Lot Size: ", LotSize);
+   Print("Fixed Profit: $", DoubleToString(FixedProfit, 2));
+   Print("Fixed Loss: $", DoubleToString(FixedLoss, 2));
+   Print("Lot Size: ", DoubleToString(LotSize, 4));
    
    return INIT_SUCCEEDED;
 }
@@ -148,10 +149,11 @@ void OnTick()
    static datetime last_bar_time = 0;
    
    // Execute only on new bar
-   if (iTime(_Symbol, chart_tf, 0) == last_bar_time)
+   datetime bar_time = iTime(_Symbol, chart_tf, 0);
+   if (bar_time == last_bar_time)
       return;
    
-   last_bar_time = iTime(_Symbol, chart_tf, 0);
+   last_bar_time = bar_time;
    
    // Update statistics
    UpdateStatistics();
@@ -186,9 +188,6 @@ void OnTick()
    // Draw dashboard
    if (ShowDashboard)
       DrawDashboard(ema_value, adx_value);
-   
-   if (ShowWatermark)
-      DrawWatermark();
 }
 
 //+------------------------------------------------------------------+
@@ -207,63 +206,62 @@ void CheckActiveTradesForTP_SL()
       
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double current_price = (bid + ask) / 2;
+      double current_price = (bid + ask) / 2.0;
       
       ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-      double sl = PositionGetDouble(POSITION_SL);
-      double tp = PositionGetDouble(POSITION_TP);
-      
-      // Calculate P&L
-      double pnl = 0;
-      if (type == POSITION_TYPE_BUY)
-      {
-         pnl = (current_price - PositionGetDouble(POSITION_PRICE_OPEN)) * PositionGetDouble(POSITION_VOLUME) * 100000;
-      }
-      else
-      {
-         pnl = (PositionGetDouble(POSITION_PRICE_OPEN) - current_price) * PositionGetDouble(POSITION_VOLUME) * 100000;
-      }
+      double entry_price = PositionGetDouble(POSITION_PRICE_OPEN);
+      double volume = PositionGetDouble(POSITION_VOLUME);
       
       // Check if TP or SL is hit
-      if (type == POSITION_TYPE_BUY && current_price >= tp)
+      if (type == POSITION_TYPE_BUY)
       {
-         trade.PositionClose(ticket);
-         total_trades++;
-         winning_trades++;
-         total_profit += FixedProfit;
-         daily_profit += FixedProfit;
-         monthly_profit += FixedProfit;
-         Print("BUY TP HIT: +$", FixedProfit);
+         double pnl = (current_price - entry_price) * volume * 100000;
+         
+         if (pnl >= FixedProfit)
+         {
+            trade.PositionClose(ticket);
+            total_trades++;
+            winning_trades++;
+            total_profit += FixedProfit;
+            daily_profit += FixedProfit;
+            monthly_profit += FixedProfit;
+            Print("BUY TP HIT: +$", DoubleToString(FixedProfit, 2));
+         }
+         else if (pnl <= -FixedLoss)
+         {
+            trade.PositionClose(ticket);
+            total_trades++;
+            losing_trades++;
+            total_profit -= FixedLoss;
+            daily_profit -= FixedLoss;
+            monthly_profit -= FixedLoss;
+            Print("BUY SL HIT: -$", DoubleToString(FixedLoss, 2));
+         }
       }
-      else if (type == POSITION_TYPE_SELL && current_price <= tp)
+      else if (type == POSITION_TYPE_SELL)
       {
-         trade.PositionClose(ticket);
-         total_trades++;
-         winning_trades++;
-         total_profit += FixedProfit;
-         daily_profit += FixedProfit;
-         monthly_profit += FixedProfit;
-         Print("SELL TP HIT: +$", FixedProfit);
-      }
-      else if (type == POSITION_TYPE_BUY && current_price <= sl)
-      {
-         trade.PositionClose(ticket);
-         total_trades++;
-         losing_trades++;
-         total_profit -= FixedLoss;
-         daily_profit -= FixedLoss;
-         monthly_profit -= FixedLoss;
-         Print("BUY SL HIT: -$", FixedLoss);
-      }
-      else if (type == POSITION_TYPE_SELL && current_price >= sl)
-      {
-         trade.PositionClose(ticket);
-         total_trades++;
-         losing_trades++;
-         total_profit -= FixedLoss;
-         daily_profit -= FixedLoss;
-         monthly_profit -= FixedLoss;
-         Print("SELL SL HIT: -$", FixedLoss);
+         double pnl = (entry_price - current_price) * volume * 100000;
+         
+         if (pnl >= FixedProfit)
+         {
+            trade.PositionClose(ticket);
+            total_trades++;
+            winning_trades++;
+            total_profit += FixedProfit;
+            daily_profit += FixedProfit;
+            monthly_profit += FixedProfit;
+            Print("SELL TP HIT: +$", DoubleToString(FixedProfit, 2));
+         }
+         else if (pnl <= -FixedLoss)
+         {
+            trade.PositionClose(ticket);
+            total_trades++;
+            losing_trades++;
+            total_profit -= FixedLoss;
+            daily_profit -= FixedLoss;
+            monthly_profit -= FixedLoss;
+            Print("SELL SL HIT: -$", DoubleToString(FixedLoss, 2));
+         }
       }
    }
 }
@@ -278,22 +276,25 @@ void ExecuteBuySignal(double ema_value)
       return;
    
    // Check wait bars
-   if (iTime(_Symbol, chart_tf, 0) - last_signal_bar < (WaitBars * PeriodSeconds(chart_tf)))
+   datetime current_time = iTime(_Symbol, chart_tf, 0);
+   int wait_seconds = WaitBars * PeriodSeconds(chart_tf);
+   
+   if (current_time - last_signal_time < wait_seconds)
       return;
    
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double entry_price = ask;
    
    // Calculate TP and SL based on fixed profit/loss
-   double sl_price = entry_price - CalculateSLPips();
-   double tp_price = entry_price + CalculateTPPips();
+   double sl_price = ask - CalculateSLPips();
+   double tp_price = ask + CalculateTPPips();
    
    // Place BUY order
-   if (trade.Buy(LotSize, _Symbol, entry_price, sl_price, tp_price, "BUY Signal"))
+   if (trade.Buy(LotSize, _Symbol, ask, sl_price, tp_price, "BUY Signal"))
    {
-      last_signal_bar = iTime(_Symbol, chart_tf, 0);
-      Print("BUY Signal executed at ", entry_price, " SL: ", sl_price, " TP: ", tp_price);
+      last_signal_time = current_time;
+      Print("BUY Signal executed at ", DoubleToString(ask, digits), 
+            " SL: ", DoubleToString(sl_price, digits), 
+            " TP: ", DoubleToString(tp_price, digits));
    }
 }
 
@@ -307,22 +308,25 @@ void ExecuteSellSignal(double ema_value)
       return;
    
    // Check wait bars
-   if (iTime(_Symbol, chart_tf, 0) - last_signal_bar < (WaitBars * PeriodSeconds(chart_tf)))
+   datetime current_time = iTime(_Symbol, chart_tf, 0);
+   int wait_seconds = WaitBars * PeriodSeconds(chart_tf);
+   
+   if (current_time - last_signal_time < wait_seconds)
       return;
    
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double entry_price = bid;
    
    // Calculate TP and SL based on fixed profit/loss
-   double sl_price = entry_price + CalculateSLPips();
-   double tp_price = entry_price - CalculateTPPips();
+   double sl_price = bid + CalculateSLPips();
+   double tp_price = bid - CalculateTPPips();
    
    // Place SELL order
-   if (trade.Sell(LotSize, _Symbol, entry_price, sl_price, tp_price, "SELL Signal"))
+   if (trade.Sell(LotSize, _Symbol, bid, sl_price, tp_price, "SELL Signal"))
    {
-      last_signal_bar = iTime(_Symbol, chart_tf, 0);
-      Print("SELL Signal executed at ", entry_price, " SL: ", sl_price, " TP: ", tp_price);
+      last_signal_time = current_time;
+      Print("SELL Signal executed at ", DoubleToString(bid, digits), 
+            " SL: ", DoubleToString(sl_price, digits), 
+            " TP: ", DoubleToString(tp_price, digits));
    }
 }
 
@@ -345,26 +349,25 @@ struct HeikinAshiData
 HeikinAshiData GetHeikinAshiData()
 {
    HeikinAshiData ha;
+   ha.is_bullish_reversal = false;
+   ha.is_bearish_reversal = false;
    
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
    
-   if (CopyRates(_Symbol, chart_tf, 0, 2, rates) < 2)
+   if (CopyRates(_Symbol, chart_tf, 0, 3, rates) < 3)
    {
-      ha.is_bullish_reversal = false;
-      ha.is_bearish_reversal = false;
       return ha;
    }
    
-   // Current bar
+   // Current bar HA
    double ha_close_curr = (rates[0].open + rates[0].high + rates[0].low + rates[0].close) / 4.0;
    double ha_open_curr = (rates[1].open + rates[1].close) / 2.0;
    double ha_high_curr = MathMax(rates[0].high, MathMax(ha_open_curr, ha_close_curr));
    double ha_low_curr = MathMin(rates[0].low, MathMin(ha_open_curr, ha_close_curr));
    
-   // Previous bar
+   // Previous bar HA
    double ha_close_prev = (rates[1].open + rates[1].high + rates[1].low + rates[1].close) / 4.0;
-   double ha_open_prev = (rates[2].open + rates[2].close) / 2.0;
    
    ha.open = ha_open_curr;
    ha.close = ha_close_curr;
@@ -416,8 +419,6 @@ bool CheckSellConditions(double ema_value)
 double CalculateSLPips()
 {
    // Convert fixed loss in USD to pips
-   // Formula: pips = (loss_usd / (lot_size * 100000)) * (1 / point)
-   
    double pips = (FixedLoss / (LotSize * 100000)) / point;
    return pips * point;
 }
@@ -428,8 +429,6 @@ double CalculateSLPips()
 double CalculateTPPips()
 {
    // Convert fixed profit in USD to pips
-   // Formula: pips = (profit_usd / (lot_size * 100000)) * (1 / point)
-   
    double pips = (FixedProfit / (LotSize * 100000)) / point;
    return pips * point;
 }
@@ -524,20 +523,23 @@ string GetTimeframeString(TIMEFRAME_MODE mode)
 //+------------------------------------------------------------------+
 void UpdateStatistics()
 {
-   // Reset daily stats at 1 AM UTC+3
+   // Get current time
    datetime now = TimeCurrent();
+   int current_day = TimeDay(now);
+   int current_month = TimeMonth(now);
    
-   if (TimeHour(now) >= 1 && (last_reset_day == 0 || TimeDay(last_reset_day) != TimeDay(now)))
+   // Reset daily stats
+   if (current_day != last_reset_day)
    {
       daily_profit = 0.0;
-      last_reset_day = now;
+      last_reset_day = current_day;
    }
    
-   // Reset monthly stats on the 1st of each month
-   if (TimeDay(now) == 1 && (last_reset_month == 0 || TimeMonth(last_reset_month) != TimeMonth(now)))
+   // Reset monthly stats
+   if (current_month != last_reset_month)
    {
       monthly_profit = 0.0;
-      last_reset_month = now;
+      last_reset_month = current_month;
    }
    
    // Update peak equity and max drawdown
@@ -555,57 +557,41 @@ void UpdateStatistics()
 //+------------------------------------------------------------------+
 void DrawDashboard(double ema_value, double adx_value)
 {
-   string dashboard_text = "";
+   // Update only on last bar
+   static datetime last_dashboard_update = 0;
+   datetime current_bar_time = iTime(_Symbol, chart_tf, 0);
    
-   dashboard_text += "╔════════════════════════════╗\n";
-   dashboard_text += "║  ◈ RAGNAROK v6.4          ║\n";
-   dashboard_text += "╠════════════════════════════╣\n";
+   if (current_bar_time == last_dashboard_update)
+      return;
    
-   // Win Rate
+   last_dashboard_update = current_bar_time;
+   
+   // Calculate win rate
    float win_rate = total_trades > 0 ? (float)winning_trades / total_trades * 100 : 0;
-   dashboard_text += "║ Win Rate: " + DoubleToString(win_rate, 1) + " %\n";
    
-   // Total Trades
+   // Build dashboard text
+   string dashboard_text = "\n╔════════════════════════════╗\n";
+   dashboard_text += "║  ◈ RAGNAROK v6.4 MT5      ║\n";
+   dashboard_text += "╠════════════════════════════╣\n";
+   dashboard_text += "║ Win Rate: " + DoubleToString(win_rate, 1) + " %\n";
    dashboard_text += "║ Total Trades: " + IntegerToString(total_trades) + "\n";
    dashboard_text += "║ Wins: " + IntegerToString(winning_trades) + " | Losses: " + IntegerToString(losing_trades) + "\n";
-   
-   // Profits
    dashboard_text += "║ Daily P&L: $" + DoubleToString(daily_profit, 2) + "\n";
    dashboard_text += "║ Monthly P&L: $" + DoubleToString(monthly_profit, 2) + "\n";
    dashboard_text += "║ Total P&L: $" + DoubleToString(total_profit, 2) + "\n";
-   
-   // Risk Management
    dashboard_text += "║ Max Drawdown: $" + DoubleToString(max_drawdown, 2) + "\n";
    
-   // Trend
    bool is_bullish = iClose(_Symbol, chart_tf, 0) > ema_value;
    string trend = is_bullish ? "▲ BULLISH" : "▼ BEARISH";
    dashboard_text += "║ Trend: " + trend + "\n";
    
-   // ADX
    dashboard_text += "║ ADX: " + DoubleToString(adx_value, 2) + "\n";
-   
    dashboard_text += "║ Timeframe: " + GetTimeframeString(Timeframe) + "\n";
    dashboard_text += "║ Profit Target: $" + DoubleToString(FixedProfit, 2) + "\n";
    dashboard_text += "║ Loss Limit: $" + DoubleToString(FixedLoss, 2) + "\n";
    dashboard_text += "╚════════════════════════════╝\n";
    
-   // Print to Journal (visible in MT5 Terminal)
-   static datetime last_dashboard_print = 0;
-   if (TimeCurrent() - last_dashboard_print > 3600) // Print every hour
-   {
-      Print(dashboard_text);
-      last_dashboard_print = TimeCurrent();
-   }
-}
-
-//+------------------------------------------------------------------+
-//| DRAW WATERMARK                                                    |
-//+------------------------------------------------------------------+
-void DrawWatermark()
-{
-   // This can be extended for chart drawing if needed
-   // For now, we just use Print for MT5 Terminal
+   Print(dashboard_text);
 }
 
 //+------------------------------------------------------------------+
